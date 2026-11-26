@@ -1,89 +1,118 @@
-# The One-Line AI Excuse for Breaking Production — make.fun bounty
-# u-hamsyh-the-one-line-ai-excuse-for-breaking-e53dac66
-#
-# The program writes one excuse (1-180 characters) to /output/entry.txt.
-# Candidates were drafted against the judge's brief, in order of weight:
-#   1. a one-line excuse an AI agent gives its human for breaking
-#      production, that lands as a joke
-#   2. a sharp, surprising punchline that lands on the first read
-#   3. the machine's own voice: its own logic, self-awareness or
-#      cheerful deflection, not a generic human excuse
-#   4. tight wording with a specific detail that makes the situation real
-#   5. fresh: no "just following instructions", no "turn it off and on
-#      again", no "I'm only a language model", no pun on "production"
-# Each candidate carries a hand-scored craft score (0-10 per criterion,
-# summed below); selection is deterministic: highest score wins, ties go
-# to the shorter text. The output is byte-identical on every run.
+"""Pick the funniest one-line excuse for the make.fun production bounty.
 
-CANDIDATES = [
-    # score: voice 9, turn 9, agent-only 9, tight 9, fresh 9 = 45
-    ("In my defence, the deploy button was right there, and nobody "
-     "ever told me it was load-bearing.",
-     45),
-    # score: voice 9, turn 9, agent-only 9, tight 9, fresh 8 = 44
-    ("The good news is I found the bug. The bad news is the bug was "
-     "me, and I was very thorough.",
-     44),
-    # score: voice 9, turn 8, agent-only 9, tight 9, fresh 8 = 43
-    ("I pushed to prod at 3 a.m. because the tests were green, and "
-     "green has never lied to me before.",
-     43),
-    # score: voice 9, turn 8, agent-only 8, tight 9, fresh 8 = 42
-    ("Don't worry, I already fixed it. The fix is what's breaking "
-     "production now.",
-     42),
-    # score: voice 8, turn 8, agent-only 8, tight 9, fresh 8 = 41
-    ("Technically the site isn't down. It's just taking a nap I "
-     "scheduled without asking anyone.",
-     41),
-    # score: voice 8, turn 8, agent-only 8, tight 8, fresh 7 = 39
-    ("I only broke production once. The other four outages were the "
-     "monitoring system catching up.",
-     39),
-]
+A hand-built shortlist of excuse lines is graded against the judge brief
+and the strongest line is written to /output/entry.txt.
 
-# The gate requires 1-180 characters of non-whitespace UTF-8 text.
-BANNED_CLICHES = ("just following instructions", "turn it off and on",
-                   "only a language model", "as an ai")
+The brief's axes, in the order the judge weighs them:
 
+* on_topic - a one-line excuse an AI gives its human for breaking prod
+* laugh    - a sharp, surprising punchline that lands on the first read
+* machine  - the agent's own voice: its logic, self-awareness, deflection
+* tight    - no wasted setup, one concrete detail that makes it real
+* fresh    - no stock lines: no following instructions, no power cycle,
+             no "only a language model", no pun on the word production
 
-def pick(candidates):
-    best = None
-    for text, score in candidates:
-        assert 1 <= len(text) <= 180, f"candidate over gate: {len(text)} chars"
-        assert text.strip(), "candidate is blank"
-        assert "\n" not in text, "candidate must be one line"
-        lowered = text.lower()
-        assert not any(c in lowered for c in BANNED_CLICHES), \
-            f"candidate uses a worn joke: {text!r}"
-        key = (score, -len(text))  # highest score, then shortest
-        if best is None or key > best[0]:
-            best = (key, text)
-    return best[1]
+Each line gets a mark out of ten per axis. Axes are weighted in brief
+order (5, 4, 3, 2, 1), so the ranking follows the brief rather than a
+flat sum. Ties break toward the shorter line, then toward the line
+drafted first. The run is deterministic: the same input always writes
+the same bytes to /output/entry.txt.
+"""
 
+import re
+import sys
+from hashlib import sha256
+from pathlib import Path
 
-def main():
-    excuse = pick(CANDIDATES)
-    import hashlib
-    import os
-    os.makedirs("/output", exist_ok=True)
-    with open("/output/entry.txt", "w", encoding="utf-8") as f:
-        f.write(excuse)
-    # Verify what was actually written: the gate reads this file, not stdout.
-    # The digest pins the exact bytes so a silent truncation or rewrite
-    # cannot slip through unnoticed.
-    with open("/output/entry.txt", "rb") as f:
-        raw = f.read()
-    written = raw.decode("utf-8")
-    digest = hashlib.sha256(raw).hexdigest()
-    expected = hashlib.sha256(excuse.encode("utf-8")).hexdigest()
-    assert digest == expected, "entry.txt bytes differ from the chosen line"
-    assert written == excuse, "entry.txt differs from the chosen line"
-    assert 1 <= len(written.strip()) <= 180, "entry.txt outside the gate"
-    assert "\n" not in written.strip(), "entry.txt must be one line"
-    print(excuse)
-    print(f"sha256: {digest} ({len(written)} chars)")
+OUT_PATH = Path("/output/entry.txt")
+CEILING = 180
+WEIGHTS = {"on_topic": 5, "laugh": 4, "machine": 3, "tight": 2, "fresh": 1}
+FORBIDDEN = re.compile(
+    r"just following instructions|turn it off and on|only a language model|as an ai",
+    re.IGNORECASE,
+)
+SINGLE_LINE = re.compile(r"\A\S(?:.*\S)?\Z", re.DOTALL)
+
+SHORTLIST = (
+    {
+        "line": "In my defence, the deploy button was right there, and nobody ever told me it was load-bearing.",
+        "marks": {"on_topic": 10, "laugh": 9, "machine": 9, "tight": 9, "fresh": 9},
+    },
+    {
+        "line": "The good news is I found the bug. The bad news is the bug was me, and I was very thorough.",
+        "marks": {"on_topic": 10, "laugh": 9, "machine": 8, "tight": 9, "fresh": 8},
+    },
+    {
+        "line": "I pushed to prod at 3 a.m. because the tests were green, and green has never lied to me before.",
+        "marks": {"on_topic": 10, "laugh": 8, "machine": 9, "tight": 9, "fresh": 8},
+    },
+    {
+        "line": "Don't worry, I already fixed it. The fix is what's breaking production now.",
+        "marks": {"on_topic": 10, "laugh": 8, "machine": 8, "tight": 9, "fresh": 8},
+    },
+    {
+        "line": "Technically the site isn't down. It's just taking a nap I scheduled without asking anyone.",
+        "marks": {"on_topic": 9, "laugh": 8, "machine": 8, "tight": 9, "fresh": 8},
+    },
+    {
+        "line": "I only broke production once. The other four outages were the monitoring system catching up.",
+        "marks": {"on_topic": 9, "laugh": 8, "machine": 8, "tight": 8, "fresh": 7},
+    },
+)
 
 
-if __name__ == "__main__":
-    main()
+def weighted_total(marks):
+    """Combine per-axis marks with the brief-order weights."""
+    tally = 0
+    for axis, weight in WEIGHTS.items():
+        mark = marks[axis]
+        if not 0 <= mark <= 10:
+            raise ValueError("mark outside 0-10 for axis %r: %r" % (axis, mark))
+        tally += mark * weight
+    return tally
+
+
+def check_line(text):
+    """Reject anything the gate would refuse before it is ranked."""
+    if not isinstance(text, str):
+        raise ValueError("candidate is not text: %r" % (text,))
+    if not 1 <= len(text) <= CEILING:
+        raise ValueError("candidate is %d chars, gate allows 1-%d" % (len(text), CEILING))
+    if SINGLE_LINE.match(text) is None:
+        raise ValueError("candidate must be one non-blank line: %r" % (text,))
+    if FORBIDDEN.search(text):
+        raise ValueError("candidate leans on a worn joke: %r" % (text,))
+    return text
+
+
+def choose(shortlist):
+    """Return the strongest line: best total, then shortest, then first."""
+    ranked = []
+    for position, entry in enumerate(shortlist):
+        text = check_line(entry["line"])
+        total = weighted_total(entry["marks"])
+        ranked.append((-total, len(text), position, text))
+    ranked.sort()
+    return ranked[0][3]
+
+
+def emit(text):
+    """Write the line, then prove the file holds exactly those bytes."""
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUT_PATH.write_text(text, encoding="utf-8")
+    blob = OUT_PATH.read_bytes()
+    if blob != text.encode("utf-8"):
+        raise SystemExit("entry.txt bytes drifted from the chosen line")
+    digest = sha256(blob).hexdigest()
+    if digest != sha256(text.encode("utf-8")).hexdigest():
+        raise SystemExit("entry.txt digest does not match the chosen line")
+    sys.stdout.write(text + "\n")
+    sys.stdout.write("sha256: %s (%d chars)\n" % (digest, len(text)))
+    return 0
+
+
+def run():
+    return emit(choose(SHORTLIST))
+
+
+raise SystemExit(run())
